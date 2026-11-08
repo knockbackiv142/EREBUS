@@ -24,17 +24,13 @@ public:
     void setReferenceGridVisible(bool visible) noexcept { gridVisible_ = visible; update(); }
     void setTrajectoriesVisible(bool visible) noexcept { trajectoriesVisible_ = visible; }
     void setFieldVisible(bool visible) noexcept { fieldVisible_ = visible; update(); }
-    void setPotentialSource(int sourceIndex) noexcept {
-        potentialSource_ = sourceIndex;
-        update();
-    }
+    void setStarsVisible(bool visible) noexcept { starsVisible_ = visible; update(); }
+    void setPotentialSource(int sourceIndex) noexcept { potentialSource_ = sourceIndex; update(); }
     void setPotentialRadius(double radiusAu) noexcept {
-        potentialRadiusAu_ = static_cast<float>(radiusAu);
-        update();
+        potentialRadiusAu_ = static_cast<float>(radiusAu); update();
     }
     void setPotentialOpacity(int opacity) noexcept {
-        potentialOpacity_ = static_cast<float>(opacity) / 100.0F;
-        update();
+        potentialOpacity_ = static_cast<float>(opacity) / 100.0F; update();
     }
     [[nodiscard]] int selectedBody() const noexcept { return selectedBody_; }
     void focusBody(int index);
@@ -62,24 +58,26 @@ private slots:
     void tick();
 
 private:
-    struct Vertex {
-        float x, y, z;
-        float nx, ny, nz;
-    };
-    struct FieldVertex {
-        float x, y, z;
-        float r, g, b, a;
-    };
+    struct Vertex { float x, y, z, nx, ny, nz; };
+    struct FieldVertex { float x, y, z, r, g, b, a; };
 
     void createSphereMesh();
     void drawSphere(const physics::Body& body, const QMatrix4x4& view,
                     const QMatrix4x4& projection);
+    void drawSaturnRings(const physics::Body& body, const QMatrix4x4& view,
+                         const QMatrix4x4& projection);
+    void drawPbhHalo(const physics::Body& body, const QMatrix4x4& view,
+                     const QMatrix4x4& projection);
     void drawOrbit(const physics::OrbitalElements& elements,
                    const QColor& color, const QMatrix4x4& view,
                    const QMatrix4x4& projection);
     void drawReferenceField(const QMatrix4x4& view, const QMatrix4x4& projection);
+    void drawStarField(QPainter& painter);
+    void drawAxesIndicator(QPainter& painter);
+
     [[nodiscard]] QMatrix4x4 viewMatrix() const;
     [[nodiscard]] QPointF projectForPicking(const physics::Vector3& position) const;
+    [[nodiscard]] static QColor orbitColorForEcc(double ecc, bool hypothetical);
 
     physics::Simulation* simulation_{};
     QTimer timer_;
@@ -92,9 +90,12 @@ private:
     QOpenGLVertexArrayObject fieldVao_;
     QOpenGLBuffer fieldVbo_{QOpenGLBuffer::VertexBuffer};
     std::vector<Vertex> sphereVertices_;
+
     bool running_{true};
     bool gridVisible_{true};
     bool trajectoriesVisible_{true};
+    bool fieldVisible_{false};
+    bool starsVisible_{false};
     double timeStepS_{86400.0};
     double speedMultiplier_{1.0};
     float distanceAu_{65.0F};
@@ -103,11 +104,15 @@ private:
     QPoint lastMouse_;
     int selectedBody_{-1};
     int focusTarget_{-1};
-    bool fieldVisible_{false};
     int potentialSource_{-1};
     float potentialRadiusAu_{8.0F};
     float potentialOpacity_{0.55F};
     physics::Vector3 focusPosition_{physics::Vector3::Zero()};
+
+    // Star field (screen-space dots, generated once)
+    struct StarDot { float x; float y; float brightness; };
+    std::vector<StarDot> stars_;
+    bool starsSeeded_{false};
 };
 
 } // namespace erebus::render
