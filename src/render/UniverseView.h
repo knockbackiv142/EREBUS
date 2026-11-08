@@ -21,7 +21,7 @@ public:
     void setRunning(bool running) noexcept { running_ = running; }
     void setTimeStep(double seconds) noexcept { timeStepS_ = seconds; }
     void setSpeedMultiplier(double multiplier) noexcept { speedMultiplier_ = multiplier; }
-    void setReferenceGridVisible(bool visible) noexcept { gridVisible_ = visible; }
+    void setReferenceGridVisible(bool visible) noexcept { gridVisible_ = visible; update(); }
     void setTrajectoriesVisible(bool visible) noexcept { trajectoriesVisible_ = visible; }
     void setFieldVisible(bool visible) noexcept { fieldVisible_ = visible; update(); }
     void setPotentialSource(int sourceIndex) noexcept {
@@ -77,10 +77,6 @@ private:
     void drawOrbit(const physics::OrbitalElements& elements,
                    const QColor& color, const QMatrix4x4& view,
                    const QMatrix4x4& projection);
-    void drawField(std::size_t sourceIndex, const QMatrix4x4& view,
-                   const QMatrix4x4& projection);
-    void drawFieldOverlay(QPainter& painter);
-    void drawPotentialField(const QMatrix4x4& view, const QMatrix4x4& projection);
     void drawReferenceField(const QMatrix4x4& view, const QMatrix4x4& projection);
     [[nodiscard]] QMatrix4x4 viewMatrix() const;
     [[nodiscard]] QPointF projectForPicking(const physics::Vector3& position) const;
@@ -111,8 +107,6 @@ private:
     int potentialSource_{-1};
     float potentialRadiusAu_{8.0F};
     float potentialOpacity_{0.55F};
-    int potentialLevelCount_{4};
-    double potentialLevelSpacing_{0.20};
     physics::Vector3 focusPosition_{physics::Vector3::Zero()};
 };
 

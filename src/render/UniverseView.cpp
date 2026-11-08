@@ -239,404 +239,185 @@ void UniverseView::drawOrbit(const physics::OrbitalElements& elements,
     orbitVao_.release();
 }
 
-void UniverseView::drawField(std::size_t sourceIndex, const QMatrix4x4& view,
-                             const QMatrix4x4& projection) {
-    if (!simulation_ || sourceIndex >= simulation_->bodies().size()) return;
-    const auto& source = simulation_->bodies()[sourceIndex];
-    const double sourceAu = source.positionM.norm() / AU;
-    const double extentAu = source.hypothetical || sourceAu > 40.0 ? 20.0 : 4.0;
-    const int samples = 31;
-    std::vector<FieldVertex> vertices;
-    vertices.reserve((samples - 1) * (samples - 1) * 4);
-    const double minimum = simulation_->gravitationalFieldMagnitude(
-        source.positionM + physics::Vector3{extentAu * AU, 0, 0}, sourceIndex);
-    const double maximum = simulation_->gravitationalFieldMagnitude(
-        source.positionM + physics::Vector3{0.02 * AU, 0, 0}, sourceIndex);
-    const auto makeVertex = [&](double localX, double localY) {
-        const physics::Vector3 point = source.positionM +
-            physics::Vector3{localX * AU, localY * AU, 0};
-        const double field = simulation_->gravitationalFieldMagnitude(point, sourceIndex);
-        const double normalized = std::clamp(
-            (std::log10(std::max(field, minimum)) - std::log10(minimum)) /
-            std::max(1.0, std::log10(maximum) - std::log10(minimum)), 0.0, 1.0);
-        return FieldVertex{
-            static_cast<float>((point.x() - focusPosition_.x()) / AU),
-            static_cast<float>((point.z() - focusPosition_.z()) / AU),
-            static_cast<float>((point.y() - focusPosition_.y()) / AU),
-            static_cast<float>(normalized),
-            static_cast<float>(0.15 + 0.75 * (1.0 - normalized)),
-            static_cast<float>(1.0 - normalized), 0.48F};
-    };
-    for (int y = 0; y < samples - 1; ++y) {
-        for (int x = 0; x < samples - 1; ++x) {
-            const double x0 = (static_cast<double>(x) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double x1 = (static_cast<double>(x + 1) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double y0 = (static_cast<double>(y) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double y1 = (static_cast<double>(y + 1) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            vertices.push_back(makeVertex(x0, y0));
-            vertices.push_back(makeVertex(x1, y0));
-            vertices.push_back(makeVertex(x1, y1));
-            vertices.push_back(makeVertex(x0, y1));
-        }
-    }
-    glDisable(GL_DEPTH_TEST);
-    fieldVao_.bind();
-    fieldVbo_.bind();
-    fieldVbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(FieldVertex)));
-    fieldShader_.bind();
-    fieldShader_.setUniformValue("view", view);
-    fieldShader_.setUniformValue("projection", projection);
-    fieldShader_.enableAttributeArray("position");
-    fieldShader_.setAttributeBuffer("position", GL_FLOAT, 0, 3, sizeof(FieldVertex));
-    fieldShader_.enableAttributeArray("color");
-    fieldShader_.setAttributeBuffer("color", GL_FLOAT, 3 * sizeof(float), 4, sizeof(FieldVertex));
-    glDrawArrays(GL_QUADS, 0, static_cast<GLsizei>(vertices.size()));
-    fieldShader_.release();
-    fieldVbo_.release();
-    fieldVao_.release();
-    glEnable(GL_DEPTH_TEST);
-}
-
-void UniverseView::drawFieldOverlay(QPainter& painter) {
-    if (!simulation_ || selectedBody_ < 0 ||
-        selectedBody_ >= static_cast<int>(simulation_->bodies().size())) return;
-    const auto& source = simulation_->bodies()[static_cast<std::size_t>(selectedBody_)];
-    const double extentAu = source.hypothetical || source.positionM.norm() / AU > 40.0 ? 20.0 : 4.0;
-    constexpr int samples = 25;
-    const double minimum = simulation_->gravitationalFieldMagnitude(
-        source.positionM + physics::Vector3{extentAu * AU, 0, 0},
-        static_cast<std::size_t>(selectedBody_));
-    const double maximum = simulation_->gravitationalFieldMagnitude(
-        source.positionM + physics::Vector3{0.02 * AU, 0, 0},
-        static_cast<std::size_t>(selectedBody_));
-    const auto fieldColor = [&](double xAu, double yAu) {
-        const auto point = source.positionM + physics::Vector3{xAu * AU, yAu * AU, 0};
-        const double field = simulation_->gravitationalFieldMagnitude(
-            point, static_cast<std::size_t>(selectedBody_));
-        const double normalized = std::clamp(
-            (std::log10(std::max(field, minimum)) - std::log10(minimum)) /
-            std::max(1.0, std::log10(maximum) - std::log10(minimum)), 0.0, 1.0);
-        const int red = static_cast<int>(255.0 * normalized);
-        const int blue = static_cast<int>(255.0 * (1.0 - normalized));
-        return QColor(red, 25, blue, 145);
-    };
-    painter.setPen(Qt::NoPen);
-    for (int y = 0; y < samples - 1; ++y) {
-        for (int x = 0; x < samples - 1; ++x) {
-            const double x0 = (static_cast<double>(x) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double x1 = (static_cast<double>(x + 1) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double y0 = (static_cast<double>(y) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const double y1 = (static_cast<double>(y + 1) / (samples - 1) - 0.5) * 2.0 * extentAu;
-            const auto corner = [&](double xAu, double yAu) {
-                return projectForPicking(source.positionM +
-                    physics::Vector3{xAu * AU, yAu * AU, 0});
-            };
-            const double centerX = (x0 + x1) * 0.5;
-            const double centerY = (y0 + y1) * 0.5;
-            painter.setBrush(fieldColor(centerX, centerY));
-            painter.drawPolygon(QPolygonF{corner(x0, y0), corner(x1, y0),
-                                          corner(x1, y1), corner(x0, y1)});
-        }
-    }
-}
-
-void UniverseView::drawPotentialField(const QMatrix4x4& view,
-                                      const QMatrix4x4& projection) {
-    if (!simulation_) return;
-    constexpr int sampleCount = 22;
-    const int sampleStride = sampleCount + 1;
-    const int samplePlane = sampleStride * sampleStride;
-    const auto sample = [&](const physics::Vector3& point) {
-        double potential = 0.0;
-        for (std::size_t index = 0; index < simulation_->bodies().size(); ++index) {
-            if (potentialSource_ >= 0 &&
-                index != static_cast<std::size_t>(potentialSource_)) continue;
-            const auto& body = simulation_->bodies()[index];
-            if (!body.massive) continue;
-            const double distance = (point - body.positionM).norm();
-            const double maskRadius = std::max(body.radiusM, 1.0e-6 * AU);
-            if (distance <= maskRadius) return std::numeric_limits<double>::quiet_NaN();
-            potential -= physics::Simulation::GravitationalConstant *
-                body.massKg / distance;
-        }
-        return potential;
-    };
-    std::vector<double> values(static_cast<std::size_t>(sampleStride * samplePlane));
-    double minimum = std::numeric_limits<double>::infinity();
-    double maximum = -std::numeric_limits<double>::infinity();
-    const auto pointAt = [&](int x, int y, int z) {
-        const double scale = 2.0 * potentialRadiusAu_ / sampleCount;
-        return focusPosition_ + physics::Vector3{
-            (-potentialRadiusAu_ + x * scale) * AU,
-            (-potentialRadiusAu_ + y * scale) * AU,
-            (-potentialRadiusAu_ + z * scale) * AU};
-    };
-    const auto valueAt = [&](int x, int y, int z) -> double& {
-        return values[static_cast<std::size_t>(z * samplePlane + y * sampleStride + x)];
-    };
-    for (int z = 0; z <= sampleCount; ++z) {
-        for (int y = 0; y <= sampleCount; ++y) {
-            for (int x = 0; x <= sampleCount; ++x) {
-                const double value = sample(pointAt(x, y, z));
-                valueAt(x, y, z) = value;
-                if (std::isfinite(value)) {
-                    minimum = std::min(minimum, value);
-                    maximum = std::max(maximum, value);
-                }
-            }
-        }
-    }
-    if (!std::isfinite(minimum) || !(maximum > minimum)) return;
-    const double range = maximum - minimum;
-    std::vector<double> levels;
-    for (int level = 1; level <= potentialLevelCount_; ++level) {
-        const double value = minimum + range * potentialLevelSpacing_ * level;
-        if (value < maximum) levels.push_back(value);
-    }
-    if (levels.empty()) levels.push_back(minimum + range * 0.5);
-    const auto colorFor = [&](std::size_t level) {
-        static constexpr std::array<std::array<float, 3>, 6> colors{{
-            {{0.20F, 0.55F, 1.00F}}, {{0.25F, 0.85F, 0.85F}},
-            {{0.35F, 1.00F, 0.55F}}, {{1.00F, 0.80F, 0.25F}},
-            {{1.00F, 0.45F, 0.25F}}, {{0.85F, 0.35F, 1.00F}}
-        }};
-        const auto& color = colors[level % colors.size()];
-        return std::array<float, 4>{color[0], color[1], color[2],
-                                    potentialOpacity_};
-    };
-    std::vector<FieldVertex> vertices;
-    const auto addPoint = [&](const physics::Vector3& point,
-                              const std::array<float, 4>& color) {
-        vertices.push_back({static_cast<float>((point.x() - focusPosition_.x()) / AU),
-            static_cast<float>((point.z() - focusPosition_.z()) / AU),
-            static_cast<float>((point.y() - focusPosition_.y()) / AU),
-            color[0], color[1], color[2], color[3]});
-    };
-    static constexpr int tetrahedra[6][4] = {
-        {0, 5, 1, 6}, {0, 5, 6, 4}, {0, 1, 5, 4},
-        {1, 3, 5, 6}, {1, 3, 6, 2}, {3, 7, 5, 6}};
-    static constexpr int edges[6][2] = {
-        {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}};
-    for (std::size_t levelIndex = 0; levelIndex < levels.size(); ++levelIndex) {
-        const double level = levels[levelIndex];
-        for (int z = 0; z < sampleCount; ++z) {
-            for (int y = 0; y < sampleCount; ++y) {
-                for (int x = 0; x < sampleCount; ++x) {
-                    const int cube[8][3] = {
-                        {x, y, z}, {x + 1, y, z}, {x, y + 1, z}, {x + 1, y + 1, z},
-                        {x, y, z + 1}, {x + 1, y, z + 1},
-                        {x, y + 1, z + 1}, {x + 1, y + 1, z + 1}};
-                    for (const auto& tetra : tetrahedra) {
-                        std::array<physics::Vector3, 4> points;
-                        std::array<double, 4> scalar{};
-                        bool valid = true;
-                        for (int corner = 0; corner < 4; ++corner) {
-                            const auto& coordinate = cube[tetra[corner]];
-                            points[corner] = pointAt(coordinate[0], coordinate[1],
-                                                     coordinate[2]);
-                            scalar[corner] = valueAt(coordinate[0], coordinate[1],
-                                                    coordinate[2]);
-                            valid = valid && std::isfinite(scalar[corner]);
-                        }
-                        if (!valid) continue;
-                        std::array<physics::Vector3, 6> intersections;
-                        int intersectionCount = 0;
-                        for (const auto& edge : edges) {
-                            const double a = scalar[edge[0]];
-                            const double b = scalar[edge[1]];
-                            if ((a < level) == (b < level) || a == b) continue;
-                            const double fraction = (level - a) / (b - a);
-                            intersections[intersectionCount++] =
-                                points[edge[0]] + fraction *
-                                (points[edge[1]] - points[edge[0]]);
-                        }
-                        const auto color = colorFor(levelIndex);
-                        if (intersectionCount == 3) {
-                            addPoint(intersections[0], color);
-                            addPoint(intersections[1], color);
-                            addPoint(intersections[2], color);
-                        } else if (intersectionCount == 4) {
-                            addPoint(intersections[0], color);
-                            addPoint(intersections[1], color);
-                            addPoint(intersections[2], color);
-                            addPoint(intersections[0], color);
-                            addPoint(intersections[2], color);
-                            addPoint(intersections[3], color);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (vertices.empty()) {
-        qWarning() << "Erebus potential field produced no isosurface triangles"
-                   << "range" << minimum << maximum
-                   << "levels" << static_cast<int>(levels.size());
-        return;
-    }
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDepthMask(GL_FALSE);
-    fieldVao_.bind();
-    fieldVbo_.bind();
-    fieldVbo_.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(FieldVertex)));
-    fieldShader_.bind();
-    fieldShader_.setUniformValue("view", view);
-    fieldShader_.setUniformValue("projection", projection);
-    fieldShader_.enableAttributeArray("position");
-    fieldShader_.setAttributeBuffer("position", GL_FLOAT, 0, 3, sizeof(FieldVertex));
-    fieldShader_.enableAttributeArray("color");
-    fieldShader_.setAttributeBuffer("color", GL_FLOAT, 3 * sizeof(float), 4, sizeof(FieldVertex));
-    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices.size()));
-    fieldShader_.release();
-    fieldVbo_.release();
-    fieldVao_.release();
-    glDepthMask(GL_TRUE);
-}
-
 void UniverseView::drawReferenceField(const QMatrix4x4& view,
                                       const QMatrix4x4& projection) {
     if (!simulation_) return;
-    // One fixed world lattice covers the complete supported 1000 AU window.
-    // The radius below only clips this lattice; it never changes line
-    // positions or resolution.
-    constexpr int gridCount = 4001;
-    constexpr double latticeExtentAu = 1000.0;
-    constexpr double latticeSpacingAu =
-        2.0 * latticeExtentAu / (gridCount - 1);
-    const double extent = potentialRadiusAu_;
-    // Keep the visual analogy shallow. The potential is physical; this
-    // displacement is only a readable rendering scale and must not hide the
-    // bodies below the reference plane.
-    // Scale only the display displacement with the visible extent. The
-    // potential contribution remains dimensionless and mass-based, so changing
-    // the field radius changes framing rather than gravitational strength.
-    const double maxDepth = std::clamp(extent * 0.08, 0.08, 0.65);
+
+    const double extent = std::clamp(static_cast<double>(potentialRadiusAu_), 0.1, 10000.0);
+    const double maxDepth = extent * 0.15;
+    const double cutoffRadius = extent * 1.25;
+
     struct Well {
-        physics::Vector3 position;
-        double mass;
-        double softeningAu;
+        double x;
+        double y;
+        double z;
+        double massKg;
+        double radiusAu;
+        double weight;
     };
+
     std::vector<Well> wells;
-    for (std::size_t index = 0; index < simulation_->bodies().size(); ++index) {
-        if (potentialSource_ >= 0 &&
-            index != static_cast<std::size_t>(potentialSource_)) continue;
-        const auto& body = simulation_->bodies()[index];
-        if (!body.massive || body.massKg <= 0.0) continue;
-        const physics::Vector3 relative = body.positionM - focusPosition_;
-        if (std::hypot(relative.x(), relative.y()) / AU <= extent * 1.5)
-            wells.push_back({relative, body.massKg,
-                             std::max({body.radiusM / AU,
-                                       latticeSpacingAu,
-                                       1.0e-4})});
-    }
-    if (wells.empty()) {
+
+    if (potentialSource_ >= 0) {
+        if (potentialSource_ < static_cast<int>(simulation_->bodies().size())) {
+            const auto& body = simulation_->bodies()[static_cast<std::size_t>(potentialSource_)];
+            const physics::Vector3 rel = body.positionM - focusPosition_;
+            wells.push_back({
+                rel.x() / AU,
+                rel.y() / AU,
+                rel.z() / AU,
+                body.massKg,
+                std::max(body.radiusM / AU, 1.0e-5),
+                1.0
+            });
+        }
+    } else {
+        // Combined potential of all massive bodies
+        double refMass = 1.0;
+        if (focusTarget_ >= 0 && focusTarget_ < static_cast<int>(simulation_->bodies().size())) {
+            const auto& focusBody = simulation_->bodies()[static_cast<std::size_t>(focusTarget_)];
+            if (focusBody.massive && focusBody.massKg > 0.0) {
+                refMass = focusBody.massKg;
+            }
+        }
+        if (refMass <= 1.0) {
+            for (const auto& body : simulation_->bodies()) {
+                if (body.massive && body.massKg > refMass) {
+                    refMass = body.massKg;
+                }
+            }
+        }
+
         for (std::size_t index = 0; index < simulation_->bodies().size(); ++index) {
-            if (potentialSource_ >= 0 &&
-                index != static_cast<std::size_t>(potentialSource_)) continue;
             const auto& body = simulation_->bodies()[index];
-            if (body.massive && body.massKg > 0.0)
-                wells.push_back({body.positionM - focusPosition_, body.massKg,
-                                 std::max({body.radiusM / AU,
-                                           latticeSpacingAu,
-                                           1.0e-4})});
+            if (!body.massive || body.massKg <= 0.0) continue;
+            const physics::Vector3 rel = body.positionM - focusPosition_;
+            const double distPlane = std::hypot(rel.x(), rel.y()) / AU;
+            if (distPlane > extent * 2.5 && body.massKg < refMass * 0.1) continue;
+
+            const double weight = std::clamp(std::cbrt(body.massKg / refMass), 0.01, 1.0);
+            wells.push_back({
+                rel.x() / AU,
+                rel.y() / AU,
+                rel.z() / AU,
+                body.massKg,
+                std::max(body.radiusM / AU, 1.0e-5),
+                weight
+            });
         }
     }
+
     if (wells.empty()) return;
-    const auto reference = std::max_element(wells.begin(), wells.end(),
-        [](const Well& a, const Well& b) { return a.mass < b.mass; });
-    const double referenceMass = std::max(reference->mass, 1.0);
-    const auto wellPotentialAt = [&](double xAu, double yAu) {
-        double normalizedPotential = 0.0;
-        for (const auto& well : wells) {
-            const double dx = (xAu - well.position.x() / AU) / extent;
-            const double dy = (yAu - well.position.y() / AU) / extent;
-            const double dz = (well.position.z() / AU) / extent;
-            const double softening = well.softeningAu / extent;
-            const double distanceNormalized = std::sqrt(
-                dx * dx + dy * dy + dz * dz + softening * softening);
-            normalizedPotential -= (well.mass / referenceMass) /
-                std::max(distanceNormalized, 1.0e-6);
-        }
-        return normalizedPotential;
-    };
-    const double boundaryPotential = std::max({
-        wellPotentialAt(-extent, -extent),
-        wellPotentialAt(-extent, extent),
-        wellPotentialAt(extent, -extent),
-        wellPotentialAt(extent, extent)});
-    const double fieldScale = std::max(1.0e-6,
-        std::abs(boundaryPotential) * 0.35);
-    const auto colorForDepth = [&](double depth) {
-        const float amount = static_cast<float>(
-            std::clamp(depth / maxDepth, 0.0, 1.0));
-        return std::array<float, 4>{
-            0.12F + 0.85F * amount,
-            0.48F + 0.35F * (1.0F - amount),
-            1.0F - 0.70F * amount,
-            potentialOpacity_ * (0.55F + 0.45F * amount)};
-    };
-    const auto depthAt = [&](double xAu, double yAu) {
-        const double excessPotential = std::max(
-            0.0, boundaryPotential - wellPotentialAt(xAu, yAu));
-        const double normalized = std::clamp(
-            excessPotential / fieldScale, 0.0, 1.0);
-        return maxDepth * (1.0 - std::exp(-2.2 * normalized));
-    };
+
     static int diagnosticsRemaining = 3;
     if (diagnosticsRemaining > 0) {
-        qWarning() << "Erebus field wells:" << static_cast<int>(wells.size())
-                   << "center depth AU:" << depthAt(0.0, 0.0)
-                   << "edge depth AU:" << depthAt(extent, extent)
+        qWarning() << "Erebus gravitational field active - wells:" << static_cast<int>(wells.size())
+                   << "extent AU:" << extent
                    << "max depth AU:" << maxDepth;
         --diagnosticsRemaining;
     }
-    std::vector<FieldVertex> vertices;
-    const auto addPoint = [&](double xAu, double yAu, double depthAu) {
-        const physics::Vector3 point = focusPosition_ +
-            physics::Vector3{xAu * AU, yAu * AU, -depthAu * AU};
-        const auto color = colorForDepth(depthAu);
-        vertices.push_back({static_cast<float>((point.x() - focusPosition_.x()) / AU),
-            static_cast<float>((point.z() - focusPosition_.z()) / AU),
-            static_cast<float>((point.y() - focusPosition_.y()) / AU),
-            color[0], color[1], color[2], color[3]});
+
+    const auto depthAt = [&](double xAu, double yAu) {
+        double totalWellDepth = 0.0;
+        for (const auto& well : wells) {
+            const double dx = xAu - well.x;
+            const double dy = yAu - well.y;
+            const double dz = well.z;
+            const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist >= cutoffRadius) continue;
+
+            const double softening = std::max(well.radiusAu, extent * 0.035);
+            const double invDist = 1.0 / std::sqrt(dist * dist + softening * softening);
+            const double invCut = 1.0 / std::sqrt(cutoffRadius * cutoffRadius + softening * softening);
+            const double shape = (invDist - invCut) / (1.0 / softening - invCut);
+
+            const double u = dist / cutoffRadius;
+            const double taper = (1.0 - u * u) * (1.0 - u * u);
+
+            totalWellDepth += maxDepth * well.weight * shape * taper;
+        }
+        return maxDepth * std::tanh(totalWellDepth / maxDepth);
     };
-    const int firstLine = std::max(0, static_cast<int>(
-        std::ceil((latticeExtentAu - extent) / latticeSpacingAu)));
-    const int lastLine = std::min(gridCount - 1, static_cast<int>(
-        std::floor((latticeExtentAu + extent) / latticeSpacingAu)));
-    const int firstSegment = std::max(0, static_cast<int>(
-        std::floor((latticeExtentAu - extent) / latticeSpacingAu)));
-    const int lastSegment = std::min(gridCount - 2, static_cast<int>(
-        std::ceil((latticeExtentAu + extent) / latticeSpacingAu)));
-    for (int line = firstLine; line <= lastLine; ++line) {
-        const double fixed = -latticeExtentAu +
-            2.0 * latticeExtentAu * line / (gridCount - 1);
-        for (int segment = firstSegment; segment <= lastSegment; ++segment) {
-            const double a = -latticeExtentAu +
-                2.0 * latticeExtentAu * segment / (gridCount - 1);
-            const double b = -latticeExtentAu +
-                2.0 * latticeExtentAu * (segment + 1) /
-                (gridCount - 1);
-            const double clippedA = std::clamp(a, -extent, extent);
-            const double clippedB = std::clamp(b, -extent, extent);
-            if (std::abs(fixed) <= extent && clippedA < clippedB) {
-                addPoint(clippedA, fixed, depthAt(clippedA, fixed));
-                addPoint(clippedB, fixed, depthAt(clippedB, fixed));
-                addPoint(fixed, clippedA, depthAt(fixed, clippedA));
-                addPoint(fixed, clippedB, depthAt(fixed, clippedB));
-            }
+
+    const auto colorForDepth = [&](double depth) {
+        const float amount = static_cast<float>(
+            std::clamp(depth / maxDepth, 0.0, 1.0));
+        float r, g, b;
+        if (amount < 0.35F) {
+            const float t = amount / 0.35F;
+            r = 0.10F + 0.15F * t;
+            g = 0.50F + 0.45F * t;
+            b = 0.95F - 0.25F * t;
+        } else if (amount < 0.70F) {
+            const float t = (amount - 0.35F) / 0.35F;
+            r = 0.25F + 0.70F * t;
+            g = 0.95F - 0.15F * t;
+            b = 0.70F - 0.55F * t;
+        } else {
+            const float t = (amount - 0.70F) / 0.30F;
+            r = 0.95F + 0.05F * t;
+            g = 0.80F - 0.55F * t;
+            b = 0.15F - 0.10F * t;
+        }
+        const float alpha = potentialOpacity_ * (0.35F + 0.65F * amount);
+        return std::array<float, 4>{r, g, b, alpha};
+    };
+
+    constexpr int gridResolution = 75;
+    std::vector<FieldVertex> gridNodes(gridResolution * gridResolution);
+
+    for (int j = 0; j < gridResolution; ++j) {
+        const double x = (-1.0 + 2.0 * j / (gridResolution - 1)) * extent;
+        for (int k = 0; k < gridResolution; ++k) {
+            const double y = (-1.0 + 2.0 * k / (gridResolution - 1)) * extent;
+            const double depth = depthAt(x, y);
+            const auto color = colorForDepth(depth);
+            gridNodes[j * gridResolution + k] = FieldVertex{
+                static_cast<float>(x),
+                static_cast<float>(-depth),
+                static_cast<float>(y),
+                color[0], color[1], color[2], color[3]
+            };
         }
     }
-    if (vertices.empty()) {
-        const double center = 0.0;
-        addPoint(-extent, center, depthAt(-extent, center));
-        addPoint(extent, center, depthAt(extent, center));
-        addPoint(center, -extent, depthAt(center, -extent));
-        addPoint(center, extent, depthAt(center, extent));
+
+    std::vector<FieldVertex> vertices;
+    vertices.reserve(gridResolution * (gridResolution - 1) * 4 + 8);
+
+    // Lines along Y (varying k for each fixed j)
+    for (int j = 0; j < gridResolution; ++j) {
+        for (int k = 0; k < gridResolution - 1; ++k) {
+            vertices.push_back(gridNodes[j * gridResolution + k]);
+            vertices.push_back(gridNodes[j * gridResolution + (k + 1)]);
+        }
     }
+
+    // Lines along X (varying j for each fixed k)
+    for (int k = 0; k < gridResolution; ++k) {
+        for (int j = 0; j < gridResolution - 1; ++j) {
+            vertices.push_back(gridNodes[j * gridResolution + k]);
+            vertices.push_back(gridNodes[(j + 1) * gridResolution + k]);
+        }
+    }
+
+    // Outer framing boundary
+    const float borderAlpha = potentialOpacity_ * 0.75F;
+    const std::array<float, 4> borderColor{0.18F, 0.65F, 1.0F, borderAlpha};
+    const float extF = static_cast<float>(extent);
+    const FieldVertex c0{-extF, 0.0F, -extF, borderColor[0], borderColor[1], borderColor[2], borderColor[3]};
+    const FieldVertex c1{ extF, 0.0F, -extF, borderColor[0], borderColor[1], borderColor[2], borderColor[3]};
+    const FieldVertex c2{ extF, 0.0F,  extF, borderColor[0], borderColor[1], borderColor[2], borderColor[3]};
+    const FieldVertex c3{-extF, 0.0F,  extF, borderColor[0], borderColor[1], borderColor[2], borderColor[3]};
+
+    vertices.push_back(c0); vertices.push_back(c1);
+    vertices.push_back(c1); vertices.push_back(c2);
+    vertices.push_back(c2); vertices.push_back(c3);
+    vertices.push_back(c3); vertices.push_back(c0);
+
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
+    glLineWidth(1.5F);
+
     fieldVao_.bind();
     fieldVbo_.bind();
     fieldVbo_.allocate(vertices.data(),
@@ -654,6 +435,7 @@ void UniverseView::drawReferenceField(const QMatrix4x4& view,
     fieldShader_.release();
     fieldVbo_.release();
     fieldVao_.release();
+    glLineWidth(1.0F);
     glDepthMask(GL_TRUE);
 }
 
