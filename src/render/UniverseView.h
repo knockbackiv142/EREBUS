@@ -24,6 +24,18 @@ public:
     void setReferenceGridVisible(bool visible) noexcept { gridVisible_ = visible; }
     void setTrajectoriesVisible(bool visible) noexcept { trajectoriesVisible_ = visible; }
     void setFieldVisible(bool visible) noexcept { fieldVisible_ = visible; update(); }
+    void setPotentialSource(int sourceIndex) noexcept {
+        potentialSource_ = sourceIndex;
+        update();
+    }
+    void setPotentialRadius(double radiusAu) noexcept {
+        potentialRadiusAu_ = static_cast<float>(radiusAu);
+        update();
+    }
+    void setPotentialOpacity(int opacity) noexcept {
+        potentialOpacity_ = static_cast<float>(opacity) / 100.0F;
+        update();
+    }
     [[nodiscard]] int selectedBody() const noexcept { return selectedBody_; }
     void focusBody(int index);
     void returnToSystemView() noexcept {
@@ -68,6 +80,8 @@ private:
     void drawField(std::size_t sourceIndex, const QMatrix4x4& view,
                    const QMatrix4x4& projection);
     void drawFieldOverlay(QPainter& painter);
+    void drawPotentialField(const QMatrix4x4& view, const QMatrix4x4& projection);
+    void drawReferenceField(const QMatrix4x4& view, const QMatrix4x4& projection);
     [[nodiscard]] QMatrix4x4 viewMatrix() const;
     [[nodiscard]] QPointF projectForPicking(const physics::Vector3& position) const;
 
@@ -94,6 +108,11 @@ private:
     int selectedBody_{-1};
     int focusTarget_{-1};
     bool fieldVisible_{false};
+    int potentialSource_{-1};
+    float potentialRadiusAu_{8.0F};
+    float potentialOpacity_{0.55F};
+    int potentialLevelCount_{4};
+    double potentialLevelSpacing_{0.20};
     physics::Vector3 focusPosition_{physics::Vector3::Zero()};
 };
 

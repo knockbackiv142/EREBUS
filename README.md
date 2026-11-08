@@ -38,6 +38,19 @@ deep-space starfield. The renderer is intentionally lightweight and scientific:
 body sizes are display-scaled, while all positions and trajectories remain in
 SI units.
 
+The **3D gravitational field visualizer** is a camera-relative, bounded
+Newtonian potential grid. It evaluates
+`Phi(r) = -sum(G*M_i/|r-r_i|)` from the instantaneous simulation state for all
+massive bodies or one selected contributor, then applies a smooth,
+visualization-only funnel displacement. Point-mass singularities are softened
+with `max(body radius, 1e-6 AU)`; this does not alter N-body accelerations or
+trajectories. The implementation follows the clearly-labelled visualisation
+approach used by
+[universe-simulator-cpp](https://github.com/ethanstoner/universe-simulator-cpp),
+not a claim of general-relativistic spacetime curvature.
+The adapted multi-well grid technique is used under that repository's MIT
+license; see its copyright and license terms for the original implementation.
+
 ## Reference object presets
 
 The initial reference snapshot uses a common application epoch of JD 2460840.5

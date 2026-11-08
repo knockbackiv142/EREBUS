@@ -235,6 +235,22 @@ double Simulation::gravitationalFieldMagnitude(const Vector3& positionM,
     return GravitationalConstant * bodies_[sourceIndex].massKg / distanceSquared;
 }
 
+double Simulation::gravitationalPotential(const Vector3& positionM,
+                                           int sourceIndex) const {
+    if (sourceIndex >= static_cast<int>(bodies_.size()))
+        throw std::out_of_range("Invalid potential source index");
+    double potential = 0.0;
+    const auto accumulate = [&](const Body& body) {
+        const double softening = std::max(body.radiusM, 1.0e-6 * 1.495978707e11);
+        const double distance = std::sqrt((positionM - body.positionM).squaredNorm() +
+                                           softening * softening);
+        potential -= GravitationalConstant * body.massKg / distance;
+    };
+    if (sourceIndex >= 0) accumulate(bodies_[static_cast<std::size_t>(sourceIndex)]);
+    else for (const auto& body : bodies_) if (body.massive) accumulate(body);
+    return potential;
+}
+
 OrbitalElements Simulation::orbitalElements(std::size_t bodyIndex,
                                              std::size_t primaryIndex) const {
     if (bodyIndex >= bodies_.size() || primaryIndex >= bodies_.size() ||

@@ -29,6 +29,8 @@ public:
     [[nodiscard]] Telemetry telemetry() const;
     [[nodiscard]] double gravitationalFieldMagnitude(
         const Vector3& positionM, std::size_t sourceIndex) const;
+    [[nodiscard]] double gravitationalPotential(const Vector3& positionM,
+                                                int sourceIndex = -1) const;
     [[nodiscard]] OrbitalElements orbitalElements(std::size_t bodyIndex,
                                                    std::size_t primaryIndex = 0) const;
 

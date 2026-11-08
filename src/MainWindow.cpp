@@ -6,6 +6,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QScrollArea>
+#include <QSlider>
 #include <QPushButton>
 #include <QStatusBar>
 #include <QTimer>
@@ -80,17 +81,32 @@ MainWindow::MainWindow() {
     connect(grid, &QCheckBox::toggled, view_,
             &render::UniverseView::setReferenceGridVisible);
     form->addRow(grid);
-    auto* field = new QCheckBox("Show selected-body gravity heatmap", group);
+    auto* field = new QCheckBox("Show 3D gravitational potential field", group);
     field->setChecked(false);
-    connect(field, &QCheckBox::toggled, this, [this, field](bool visible) {
-        if (visible && view_->selectedBody() < 0) {
-            statusBar()->showMessage("Select or focus a celestial body first.");
-            field->setChecked(false);
-            return;
-        }
-        view_->setFieldVisible(visible);
-    });
+    connect(field, &QCheckBox::toggled, view_, &render::UniverseView::setFieldVisible);
     form->addRow(field);
+    auto* contributor = new QComboBox(group);
+    contributor->addItem("Combined potential", -1);
+    for (std::size_t index = 0; index < simulation_.bodies().size(); ++index)
+        contributor->addItem(QString::fromStdString(simulation_.bodies()[index].name),
+                             static_cast<int>(index));
+    connect(contributor, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this, contributor](int) {
+                view_->setPotentialSource(contributor->currentData().toInt());
+            });
+    form->addRow("Contributors", contributor);
+    auto* radius = new QDoubleSpinBox(group);
+    radius->setRange(0.25, 1000.0);
+    radius->setValue(8.0);
+    radius->setSuffix(" AU");
+    connect(radius, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            view_, &render::UniverseView::setPotentialRadius);
+    form->addRow("Field radius", radius);
+    auto* opacity = new QSlider(Qt::Horizontal, group);
+    opacity->setRange(5, 95);
+    opacity->setValue(55);
+    connect(opacity, &QSlider::valueChanged, view_, &render::UniverseView::setPotentialOpacity);
+    form->addRow("Field opacity", opacity);
     auto* overview = new QPushButton("Return to Solar System view", group);
     connect(overview, &QPushButton::clicked, view_, &render::UniverseView::returnToSystemView);
     form->addRow(overview);
