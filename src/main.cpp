@@ -1,0 +1,17 @@
+#include "MainWindow.h"
+#include <QApplication>
+#include <QSurfaceFormat>
+
+int main(int argc, char* argv[]) {
+    QSurfaceFormat format;
+    format.setRenderableType(QSurfaceFormat::OpenGL);
+    format.setVersion(2, 1);
+    format.setProfile(QSurfaceFormat::CompatibilityProfile);
+    format.setDepthBufferSize(24);
+    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+    QSurfaceFormat::setDefaultFormat(format);
+    QApplication application(argc, argv);
+    erebus::MainWindow window;
+    window.show();
+    return application.exec();
+}

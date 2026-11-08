@@ -1,0 +1,50 @@
+# CMake build output
+/build/
+/out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+compile_commands.json
+
+# Visual Studio and MinGW
+/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln
+*.vcxproj*
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.a
+*.lib
+
+# Qt generated files
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+
+# vcpkg local state
+/vcpkg_installed/
+/vcpkg-buildtrees/
+/vcpkg-packages/
+
+# Runtime logs and local diagnostics
+*.log
+*.dmp
+*.core
+
+# IDE and OS files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+.history/
+Thumbs.db
+Desktop.ini
