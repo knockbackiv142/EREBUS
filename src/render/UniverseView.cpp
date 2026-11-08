@@ -359,15 +359,17 @@ void UniverseView::drawOrbit(const physics::OrbitalElements& elements,
     glLineWidth(1.0F);
 }
 
-// ─── drawReferenceField (gravitational well grid) ─────────────────────────────
+// ─── drawReferenceField (gravitational well grid: horizontal & vertical with 3D bending) ─
 
 void UniverseView::drawReferenceField(const QMatrix4x4& view,
                                       const QMatrix4x4& projection) {
     if (!simulation_) return;
 
-    const double extent      = std::clamp(static_cast<double>(potentialRadiusAu_), 0.1, 10000.0);
-    const double maxDepth    = extent * 0.15;
-    const double cutoffRadius = extent * 1.25;
+    const double extent       = std::clamp(static_cast<double>(potentialRadiusAu_), 0.1, 10000.0);
+    const double maxDepth     = extent * 0.18;
+    const double maxBend      = extent * 0.12;
+    const double cutoffRadius = extent * 1.35;
+    const double vExtent      = extent * 0.40;
 
     struct Well { double x, y, z, massKg, radiusAu, weight; };
     std::vector<Well> wells;
@@ -401,77 +403,255 @@ void UniverseView::drawReferenceField(const QMatrix4x4& view,
     }
     if (wells.empty()) return;
 
-    const auto depthAt = [&](double xAu, double yAu) {
-        double total = 0.0;
+    double centerX = 0.0, centerY = 0.0, centerZ = 0.0;
+    if (potentialSource_ >= 0 && !wells.empty()) {
+        centerX = wells[0].x;
+        centerY = wells[0].y;
+        centerZ = wells[0].z;
+    }
+
+    struct BentPoint {
+        float xGl, yGl, zGl;
+        float depthNorm;
+        float fieldNorm;
+    };
+
+    const auto bend = [&](double xSim, double ySim, double zSim, bool applySheetDepth) -> BentPoint {
+        double dxPull = 0.0;
+        double dyPull = 0.0;
+        double dzPull = 0.0;
+        double totalDepth = 0.0;
+        double totalField = 0.0;
+
         for (const auto& w : wells) {
-            const double dx = xAu - w.x, dy = yAu - w.y, dz = w.z;
+            const double dx = xSim - w.x;
+            const double dy = ySim - w.y;
+            const double dz = zSim - w.z;
             const double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
             if (dist >= cutoffRadius) continue;
-            const double soft   = std::max(w.radiusAu, extent * 0.035);
+
+            const double soft   = std::max(w.radiusAu, extent * 0.040);
             const double invD   = 1.0 / std::sqrt(dist*dist + soft*soft);
             const double invCut = 1.0 / std::sqrt(cutoffRadius*cutoffRadius + soft*soft);
             const double shape  = (invD - invCut) / (1.0/soft - invCut);
             const double u      = dist / cutoffRadius;
             const double taper  = (1.0 - u*u) * (1.0 - u*u);
-            total += maxDepth * w.weight * shape * taper;
+            const double factor = w.weight * shape * taper;
+
+            // Inward radial displacement pulling space toward the mass center (proper bending)
+            const double invSoft = 1.0 / std::sqrt(dist*dist + soft*soft);
+            dxPull -= dx * invSoft * (maxBend * factor);
+            dyPull -= dy * invSoft * (maxBend * factor);
+            dzPull -= dz * invSoft * (maxBend * factor);
+
+            totalDepth += maxDepth * factor;
+            totalField += factor;
         }
-        return maxDepth * std::tanh(total / maxDepth);
+
+        const double clampedDepth = maxDepth * std::tanh(totalDepth / maxDepth);
+        double finalX = xSim + dxPull;
+        double finalY = ySim + dyPull;
+        double finalZ = zSim + dzPull;
+        if (applySheetDepth) {
+            // For the horizontal sheet, gravity funnels downward along negative vertical (-Z_sim)
+            finalZ = zSim - clampedDepth;
+        }
+
+        // Mapping to OpenGL coordinates:
+        // OpenGL X = Simulation X
+        // OpenGL Y = Simulation Z (vertical)
+        // OpenGL Z = Simulation Y (depth)
+        const float xGl = static_cast<float>(finalX);
+        const float yGl = static_cast<float>(finalZ);
+        const float zGl = static_cast<float>(finalY);
+
+        const float depthNorm = static_cast<float>(std::clamp(clampedDepth / maxDepth, 0.0, 1.0));
+        const float fieldNorm = static_cast<float>(std::clamp(std::tanh(totalField * 1.5), 0.0, 1.0));
+
+        return {xGl, yGl, zGl, depthNorm, fieldNorm};
     };
 
-    const auto colorForDepth = [&](double depth) {
-        const float amount = static_cast<float>(std::clamp(depth / maxDepth, 0.0, 1.0));
+    const auto colorForHorizontal = [&](float amount) -> std::array<float, 4> {
         float r, g, b;
         if (amount < 0.35F) {
             const float t = amount / 0.35F;
-            r = 0.10F + 0.15F*t; g = 0.50F + 0.45F*t; b = 0.95F - 0.25F*t;
+            r = 0.10F + 0.12F*t; g = 0.45F + 0.45F*t; b = 0.95F - 0.20F*t;
         } else if (amount < 0.70F) {
             const float t = (amount - 0.35F) / 0.35F;
-            r = 0.25F + 0.70F*t; g = 0.95F - 0.15F*t; b = 0.70F - 0.55F*t;
+            r = 0.22F + 0.68F*t; g = 0.90F - 0.10F*t; b = 0.75F - 0.55F*t;
         } else {
             const float t = (amount - 0.70F) / 0.30F;
-            r = 0.95F + 0.05F*t; g = 0.80F - 0.55F*t; b = 0.15F - 0.10F*t;
+            r = 0.90F + 0.10F*t; g = 0.80F - 0.50F*t; b = 0.20F - 0.10F*t;
         }
         const float alpha = potentialOpacity_ * (0.35F + 0.65F * amount);
-        return std::array<float,4>{r, g, b, alpha};
+        return {r, g, b, alpha};
     };
 
-    constexpr int RES = 35; // 35x35 = 1225 nodes (4.6x faster than 75x75, ideal for iGPUs)
-    std::vector<FieldVertex> gridNodes(RES * RES);
+    const auto colorForVertical = [&](float amount) -> std::array<float, 4> {
+        float r, g, b;
+        if (amount < 0.35F) {
+            const float t = amount / 0.35F;
+            r = 0.20F + 0.18F*t; g = 0.20F + 0.12F*t; b = 0.75F + 0.15F*t;
+        } else if (amount < 0.70F) {
+            const float t = (amount - 0.35F) / 0.35F;
+            r = 0.38F + 0.42F*t; g = 0.32F + 0.18F*t; b = 0.90F - 0.20F*t;
+        } else {
+            const float t = (amount - 0.70F) / 0.30F;
+            r = 0.80F + 0.18F*t; g = 0.50F + 0.30F*t; b = 0.70F + 0.25F*t;
+        }
+        const float alpha = (potentialOpacity_ * 0.45F) * (0.30F + 0.70F * amount);
+        return {r, g, b, alpha};
+    };
 
-    for (int j = 0; j < RES; ++j) {
-        const double x = (-1.0 + 2.0*j / (RES-1)) * extent;
-        for (int k = 0; k < RES; ++k) {
-            const double y = (-1.0 + 2.0*k / (RES-1)) * extent;
-            const double depth = depthAt(x, y);
-            const auto col = colorForDepth(depth);
-            gridNodes[j*RES+k] = FieldVertex{
-                static_cast<float>(x), static_cast<float>(-depth), static_cast<float>(y),
-                col[0], col[1], col[2], col[3]};
+    std::vector<FieldVertex> vertices;
+    vertices.reserve(9500);
+
+    // ── 1. Horizontal Warped Spacetime Sheet ───────────────────────────────────
+    constexpr int RES_H = 33;
+    std::vector<FieldVertex> hNodes(RES_H * RES_H);
+    for (int j = 0; j < RES_H; ++j) {
+        const double x = centerX + (-1.0 + 2.0*j / (RES_H-1)) * extent;
+        for (int k = 0; k < RES_H; ++k) {
+            const double y = centerY + (-1.0 + 2.0*k / (RES_H-1)) * extent;
+            const auto pt = bend(x, y, 0.0, true);
+            const auto col = colorForHorizontal(pt.depthNorm);
+            hNodes[j*RES_H+k] = FieldVertex{pt.xGl, pt.yGl, pt.zGl, col[0], col[1], col[2], col[3]};
+        }
+    }
+    for (int j = 0; j < RES_H; ++j)
+        for (int k = 0; k < RES_H-1; ++k) {
+            vertices.push_back(hNodes[j*RES_H+k]);
+            vertices.push_back(hNodes[j*RES_H+(k+1)]);
+        }
+    for (int k = 0; k < RES_H; ++k)
+        for (int j = 0; j < RES_H-1; ++j) {
+            vertices.push_back(hNodes[j*RES_H+k]);
+            vertices.push_back(hNodes[(j+1)*RES_H+k]);
+        }
+
+    // ── 2. Vertical Longitudinal Grid Sheet (X-Z Plane) ───────────────────────
+    constexpr int RES_VX = 31;
+    constexpr int RES_VZ = 17;
+    std::vector<FieldVertex> vxNodes(RES_VX * RES_VZ);
+    for (int j = 0; j < RES_VX; ++j) {
+        const double x = centerX + (-1.0 + 2.0*j / (RES_VX-1)) * extent;
+        for (int k = 0; k < RES_VZ; ++k) {
+            const double z = centerZ + (-1.0 + 2.0*k / (RES_VZ-1)) * vExtent;
+            const auto pt = bend(x, centerY, z, false);
+            const auto col = colorForVertical(pt.fieldNorm);
+            vxNodes[j*RES_VZ+k] = FieldVertex{pt.xGl, pt.yGl, pt.zGl, col[0], col[1], col[2], col[3]};
+        }
+    }
+    for (int j = 0; j < RES_VX; ++j)
+        for (int k = 0; k < RES_VZ-1; ++k) {
+            vertices.push_back(vxNodes[j*RES_VZ+k]);
+            vertices.push_back(vxNodes[j*RES_VZ+(k+1)]);
+        }
+    for (int k = 0; k < RES_VZ; ++k)
+        for (int j = 0; j < RES_VX-1; ++j) {
+            vertices.push_back(vxNodes[j*RES_VZ+k]);
+            vertices.push_back(vxNodes[(j+1)*RES_VZ+k]);
+        }
+
+    // ── 3. Vertical Transverse Grid Sheet (Y-Z Plane) ─────────────────────────
+    std::vector<FieldVertex> vyNodes(RES_VX * RES_VZ);
+    for (int j = 0; j < RES_VX; ++j) {
+        const double y = centerY + (-1.0 + 2.0*j / (RES_VX-1)) * extent;
+        for (int k = 0; k < RES_VZ; ++k) {
+            const double z = centerZ + (-1.0 + 2.0*k / (RES_VZ-1)) * vExtent;
+            const auto pt = bend(centerX, y, z, false);
+            const auto col = colorForVertical(pt.fieldNorm);
+            vyNodes[j*RES_VZ+k] = FieldVertex{pt.xGl, pt.yGl, pt.zGl, col[0], col[1], col[2], col[3]};
+        }
+    }
+    for (int j = 0; j < RES_VX; ++j)
+        for (int k = 0; k < RES_VZ-1; ++k) {
+            vertices.push_back(vyNodes[j*RES_VZ+k]);
+            vertices.push_back(vyNodes[j*RES_VZ+(k+1)]);
+        }
+    for (int k = 0; k < RES_VZ; ++k)
+        for (int j = 0; j < RES_VX-1; ++j) {
+            vertices.push_back(vyNodes[j*RES_VZ+k]);
+            vertices.push_back(vyNodes[(j+1)*RES_VZ+k]);
+        }
+
+    // ── 4. Funnel Ribs and Concentric Throat Contours ──────────────────────────
+    constexpr int RING_SEGS = 32;
+    constexpr int NUM_RIBS = 8;
+    constexpr int RIB_SAMPLES = 10;
+
+    for (const auto& w : wells) {
+        if (w.weight < 0.04) continue;
+
+        // Concentric circular contours around the gravity well
+        for (const double rFrac : {0.15, 0.32, 0.55, 0.80}) {
+            const double r = extent * rFrac;
+            FieldVertex prevVtx{};
+            for (int s = 0; s <= RING_SEGS; ++s) {
+                const double ang = 2.0 * static_cast<double>(std::numbers::pi) * s / RING_SEGS;
+                const double x = w.x + r * std::cos(ang);
+                const double y = w.y + r * std::sin(ang);
+                const auto pt = bend(x, y, 0.0, true);
+                const auto col = colorForHorizontal(pt.depthNorm);
+                const float ringAlpha = static_cast<float>(potentialOpacity_ * (0.45F + 0.35F * pt.depthNorm));
+                const FieldVertex currVtx{pt.xGl, pt.yGl, pt.zGl, col[0], col[1], col[2], ringAlpha};
+                if (s > 0) {
+                    vertices.push_back(prevVtx);
+                    vertices.push_back(currVtx);
+                }
+                prevVtx = currVtx;
+            }
+        }
+
+        // Vertical funnel meridian ribs plunging into the throat
+        for (int rib = 0; rib < NUM_RIBS; ++rib) {
+            const double ang = 2.0 * static_cast<double>(std::numbers::pi) * rib / NUM_RIBS;
+            const double ca = std::cos(ang);
+            const double sa = std::sin(ang);
+            FieldVertex prevVtx{};
+            for (int s = 0; s < RIB_SAMPLES; ++s) {
+                const double t = static_cast<double>(s) / (RIB_SAMPLES - 1);
+                const double r = extent * (0.025 + 0.775 * t);
+                const double x = w.x + r * ca;
+                const double y = w.y + r * sa;
+                const auto pt = bend(x, y, 0.0, true);
+                const auto col = colorForHorizontal(pt.depthNorm);
+                const float ribAlpha = static_cast<float>(potentialOpacity_ * (0.55F - 0.20F * static_cast<float>(t)));
+                const FieldVertex currVtx{pt.xGl, pt.yGl, pt.zGl, col[0], col[1], col[2], ribAlpha};
+                if (s > 0) {
+                    vertices.push_back(prevVtx);
+                    vertices.push_back(currVtx);
+                }
+                prevVtx = currVtx;
+            }
         }
     }
 
-    std::vector<FieldVertex> vertices;
-    vertices.reserve(RES*(RES-1)*4 + 8);
-    for (int j = 0; j < RES; ++j)
-        for (int k = 0; k < RES-1; ++k) {
-            vertices.push_back(gridNodes[j*RES+k]);
-            vertices.push_back(gridNodes[j*RES+(k+1)]);
-        }
-    for (int k = 0; k < RES; ++k)
-        for (int j = 0; j < RES-1; ++j) {
-            vertices.push_back(gridNodes[j*RES+k]);
-            vertices.push_back(gridNodes[(j+1)*RES+k]);
-        }
-
-    // Border
-    const float bA = potentialOpacity_ * 0.75F;
-    const std::array<float,4> bc{0.18F, 0.65F, 1.0F, bA};
+    // ── 5. Outer Boundary Frames ──────────────────────────────────────────────
+    const float bA = potentialOpacity_ * 0.70F;
+    const std::array<float, 4> bc{0.20F, 0.70F, 1.0F, bA};
     const float extF = static_cast<float>(extent);
-    const FieldVertex c0{-extF,0,- extF,bc[0],bc[1],bc[2],bc[3]};
-    const FieldVertex c1{ extF,0,-extF,bc[0],bc[1],bc[2],bc[3]};
-    const FieldVertex c2{ extF,0, extF,bc[0],bc[1],bc[2],bc[3]};
-    const FieldVertex c3{-extF,0, extF,bc[0],bc[1],bc[2],bc[3]};
-    vertices.insert(vertices.end(),{c0,c1,c1,c2,c2,c3,c3,c0});
+    const float cX = static_cast<float>(centerX);
+    const float cY = static_cast<float>(centerY);
+    const float cZ = static_cast<float>(centerZ);
+    const float vExtF = static_cast<float>(vExtent);
+
+    // Horizontal rim border
+    const FieldVertex c0{cX - extF, 0.0F, cY - extF, bc[0], bc[1], bc[2], bc[3]};
+    const FieldVertex c1{cX + extF, 0.0F, cY - extF, bc[0], bc[1], bc[2], bc[3]};
+    const FieldVertex c2{cX + extF, 0.0F, cY + extF, bc[0], bc[1], bc[2], bc[3]};
+    const FieldVertex c3{cX - extF, 0.0F, cY + extF, bc[0], bc[1], bc[2], bc[3]};
+    vertices.insert(vertices.end(), {c0, c1, c1, c2, c2, c3, c3, c0});
+
+    // Vertical boundary pillars at corners
+    const float vA = potentialOpacity_ * 0.30F;
+    const std::array<float, 4> vbc{0.45F, 0.35F, 0.90F, vA};
+    for (float dx : {-extF, extF}) {
+        for (float dy : {-extF, extF}) {
+            vertices.push_back(FieldVertex{cX + dx, cZ - vExtF, cY + dy, vbc[0], vbc[1], vbc[2], vbc[3]});
+            vertices.push_back(FieldVertex{cX + dx, cZ + vExtF, cY + dy, vbc[0], vbc[1], vbc[2], vbc[3]});
+        }
+    }
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);

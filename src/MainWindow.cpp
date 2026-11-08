@@ -121,7 +121,7 @@ MainWindow::MainWindow() {
     connect(stars, &QCheckBox::toggled, view_, &render::UniverseView::setStarsVisible);
     form->addRow(stars);
 
-    auto* field = new QCheckBox("Show gravitational potential field", group);
+    auto* field = new QCheckBox("Show 3D gravitational field (warped spacetime)", group);
     field->setChecked(false);
     connect(field, &QCheckBox::toggled, view_, &render::UniverseView::setFieldVisible);
     form->addRow(field);
