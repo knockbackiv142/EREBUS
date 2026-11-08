@@ -1,8 +1,10 @@
 # Project Erebus
 
-Project Erebus is a C++20/Qt 6 scientific visualisation foundation for studying
-the perturbative influence of a hypothetical primordial black hole (PBH) on the
-outer Solar System.
+Project Erebus is a native C++20/Qt 6 research simulator for investigating how
+a hypothetical primordial black hole (PBH) could perturb the outer Solar
+System. It combines direct Newtonian N-body integration with an interactive
+OpenGL 3D view of planets, trans-Neptunian objects, orbital trajectories,
+telemetry, and camera-relative gravitational-field visualisation.
 
 ## Physics model
 
@@ -38,18 +40,16 @@ deep-space starfield. The renderer is intentionally lightweight and scientific:
 body sizes are display-scaled, while all positions and trajectories remain in
 SI units.
 
-The **3D gravitational field visualizer** is a camera-relative, bounded
-Newtonian potential grid. It evaluates
-`Phi(r) = -sum(G*M_i/|r-r_i|)` from the instantaneous simulation state for all
-massive bodies or one selected contributor, then applies a smooth,
-visualization-only funnel displacement. Point-mass singularities are softened
-with `max(body radius, 1e-6 AU)`; this does not alter N-body accelerations or
-trajectories. The implementation follows the clearly-labelled visualisation
-approach used by
+The **3D gravitational-field visualizer** evaluates the instantaneous Newtonian
+potential
+`Phi(r) = -sum(G*M_i/|r-r_i|)` for all massive bodies or one selected
+contributor. Its camera-relative multi-well grid uses softened, bounded
+displacement solely as a visual aid; it is not a relativistic spacetime model
+and never modifies accelerations, trajectories, or conserved quantities.
+Point-mass singularities use visualization-only softening. The rendering
+approach is adapted from
 [universe-simulator-cpp](https://github.com/ethanstoner/universe-simulator-cpp),
-not a claim of general-relativistic spacetime curvature.
-The adapted multi-well grid technique is used under that repository's MIT
-license; see its copyright and license terms for the original implementation.
+under its MIT license.
 
 ## Reference object presets
 
