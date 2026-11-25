@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QPlainTextEdit>
 
 class QDoubleSpinBox;
 class QComboBox;
@@ -27,6 +28,7 @@ private slots:
     void applyPbhPreset(int index);
     void toggleTelemetryRecording();
     void exportLiveTelemetry();
+    void refreshEncounterLog();
 
 private:
     physics::Simulation      simulation_;
@@ -40,6 +42,7 @@ private:
     QPushButton*             recordBtn_{};
     QPushButton*             exportLiveBtn_{};
     QLabel*                  recordStatus_{};
+    QPlainTextEdit*          encounterLog_{};
 };
 
 } // namespace erebus

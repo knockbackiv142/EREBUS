@@ -69,7 +69,9 @@ void Simulation::addBody(std::string name, double massKg, double radiusM,
 void Simulation::resetSolarSystem() {
     bodies_.clear();
     trajectories_.clear();
+    encounterLog_.clear();
     timeS_ = 0.0;
+    referenceEnergyJ_ = 0.0;
 
     // ── Sun ──────────────────────────────────────────────────────────────────
     addBody("Sun", SunMass, 6.957e8, Vector3::Zero(), Vector3::Zero());
@@ -231,17 +233,26 @@ void Simulation::applyPbhPreset(int preset) {
                      elements, ReferenceEpochJd, true);
 }
 
-// ─── Integrator — Leapfrog / Velocity-Störmer-Verlet ─────────────────────────
+// ─── Integrator — Leapfrog (symplectic 2nd-order) + RK4 (4th-order) ──────────
+
 std::vector<Vector3> Simulation::accelerations() const {
+    return accelerationsFromState({});
+}
+
+std::vector<Vector3> Simulation::accelerationsFromState(const State& s) const {
     const std::size_t n = bodies_.size();
+    // If s is non-empty, use the provided positions; otherwise use current body positions
+    const bool useS = !s.positions.empty();
     std::vector<Vector3> result(n, Vector3::Zero());
-    constexpr double softening2 = 1.0e14; // ~10,000 km physical softening to prevent singular divergences
+    constexpr double softening2 = 1.0e14;
 
     for (std::size_t i = 0; i < n; ++i) {
         if (!bodies_[i].massive) continue;
+        const Vector3& pi = useS ? s.positions[i] : bodies_[i].positionM;
         for (std::size_t j = 0; j < n; ++j) {
             if (i == j || !bodies_[j].massive) continue;
-            const Vector3 delta = bodies_[j].positionM - bodies_[i].positionM;
+            const Vector3& pj = useS ? s.positions[j] : bodies_[j].positionM;
+            const Vector3 delta = pj - pi;
             const double r2 = delta.squaredNorm() + softening2;
             const double r  = std::sqrt(r2);
             result[i] += GravitationalConstant * bodies_[j].massKg * delta / (r2 * r);
@@ -250,18 +261,115 @@ std::vector<Vector3> Simulation::accelerations() const {
     return result;
 }
 
+void Simulation::advanceLeapfrog(double dtS) {
+    // Velocity Störmer-Verlet (symplectic, 2nd-order, excellent for orbital mechanics)
+    const auto first = accelerationsFromState({});
+    for (std::size_t i = 0; i < bodies_.size(); ++i)
+        if (bodies_[i].massive) bodies_[i].velocityMPerS += 0.5 * dtS * first[i];
+    for (auto& body : bodies_) body.positionM += dtS * body.velocityMPerS;
+    const auto second = accelerationsFromState({});
+    for (std::size_t i = 0; i < bodies_.size(); ++i)
+        if (bodies_[i].massive) bodies_[i].velocityMPerS += 0.5 * dtS * second[i];
+}
+
+void Simulation::advanceRK4(double dtS) {
+    // Classic 4th-order Runge-Kutta: much better energy conservation on large steps
+    const std::size_t n = bodies_.size();
+
+    // Snapshot current state
+    State s0;
+    s0.positions.resize(n);
+    s0.velocities.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        s0.positions[i]  = bodies_[i].positionM;
+        s0.velocities[i] = bodies_[i].velocityMPerS;
+    }
+
+    // Helper: advance a state by (dr = v*h, dv = a*h)
+    const auto evalDerivs = [&](const State& s) -> State {
+        const auto accs = accelerationsFromState(s);
+        State deriv;
+        deriv.positions.resize(n);
+        deriv.velocities.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            deriv.positions[i]  = s.velocities[i];
+            deriv.velocities[i] = accs[i];
+        }
+        return deriv;
+    };
+
+    const auto addScaled = [&](const State& base, const State& d, double h) -> State {
+        State out;
+        out.positions.resize(n);
+        out.velocities.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            out.positions[i]  = base.positions[i]  + h * d.positions[i];
+            out.velocities[i] = base.velocities[i] + h * d.velocities[i];
+        }
+        return out;
+    };
+
+    const State k1 = evalDerivs(s0);
+    const State k2 = evalDerivs(addScaled(s0, k1, 0.5 * dtS));
+    const State k3 = evalDerivs(addScaled(s0, k2, 0.5 * dtS));
+    const State k4 = evalDerivs(addScaled(s0, k3, dtS));
+
+    // Combine: y1 = y0 + (dt/6)*(k1 + 2k2 + 2k3 + k4)
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!bodies_[i].massive) continue;
+        bodies_[i].positionM    = s0.positions[i]  + (dtS / 6.0) *
+            (k1.positions[i]  + 2.0 * k2.positions[i]  + 2.0 * k3.positions[i]  + k4.positions[i]);
+        bodies_[i].velocityMPerS = s0.velocities[i] + (dtS / 6.0) *
+            (k1.velocities[i] + 2.0 * k2.velocities[i] + 2.0 * k3.velocities[i] + k4.velocities[i]);
+    }
+}
+
+void Simulation::checkEncounters() {
+    // Find the PBH
+    const Body* pbh = nullptr;
+    std::size_t pbhIdx = 0;
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (bodies_[i].hypothetical) { pbh = &bodies_[i]; pbhIdx = i; break; }
+    }
+    if (!pbh) return;
+
+    for (std::size_t i = 1; i < bodies_.size(); ++i) {
+        if (i == pbhIdx || bodies_[i].hypothetical) continue;
+        const double sep = (pbh->positionM - bodies_[i].positionM).norm();
+        // Hill sphere of PBH relative to Sun
+        const double hillPbh = hillSphereRadiusM(pbhIdx, 0);
+        if (sep < 2.0 * hillPbh && hillPbh > 0.0) {
+            // Check if this is a new encounter (not logged within last 365 days)
+            constexpr double minGapS = 365.25 * 86400.0;
+            bool alreadyLogged = false;
+            for (const auto& ev : encounterLog_) {
+                if (ev.bodyName == bodies_[i].name && (timeS_ - ev.timeS) < minGapS) {
+                    alreadyLogged = true;
+                    break;
+                }
+            }
+            if (!alreadyLogged) {
+                constexpr double AU = 1.495978707e11;
+                EncounterEvent ev;
+                ev.timeS           = timeS_;
+                ev.bodyName        = bodies_[i].name;
+                ev.separationAU    = sep / AU;
+                ev.relativeSpeedKmS = (pbh->velocityMPerS - bodies_[i].velocityMPerS).norm() / 1000.0;
+                encounterLog_.push_front(ev);
+                if (encounterLog_.size() > 200) encounterLog_.pop_back();
+            }
+        }
+    }
+}
+
 void Simulation::advance(double dtS) {
     if (!std::isfinite(dtS) || dtS <= 0.0)
         throw std::invalid_argument("Simulation timestep must be finite and positive");
 
-    // Velocity Verlet / Leapfrog (symplectic, 2nd-order)
-    const auto first = accelerations();
-    for (std::size_t i = 0; i < bodies_.size(); ++i)
-        if (bodies_[i].massive) bodies_[i].velocityMPerS += 0.5 * dtS * first[i];
-    for (auto& body : bodies_) body.positionM += dtS * body.velocityMPerS;
-    const auto second = accelerations();
-    for (std::size_t i = 0; i < bodies_.size(); ++i)
-        if (bodies_[i].massive) bodies_[i].velocityMPerS += 0.5 * dtS * second[i];
+    if (integrator_ == Integrator::RungeKutta4)
+        advanceRK4(dtS);
+    else
+        advanceLeapfrog(dtS);
 
     for (std::size_t i = 0; i < bodies_.size(); ++i) {
         auto& history = trajectories_[i];
@@ -269,6 +377,7 @@ void Simulation::advance(double dtS) {
         if (history.size() > 2000) history.erase(history.begin());
     }
     timeS_ += dtS;
+    checkEncounters();
 }
 
 // ─── Accessors ───────────────────────────────────────────────────────────────
@@ -303,11 +412,17 @@ void Simulation::setPbhOrbit(double semiMajorAxisM, double eccentricity) {
 
 // ─── Telemetry ────────────────────────────────────────────────────────────────
 Telemetry Simulation::telemetry() const {
+    constexpr double AU = 1.495978707e11;
+    constexpr double YEAR_S = 365.25 * 86400.0;
+
     Telemetry value{.timeS = timeS_};
     Vector3 momentum = Vector3::Zero();
+    Vector3 angMom   = Vector3::Zero();
+
     for (const auto& body : bodies_) {
         value.kineticEnergyJ += 0.5 * body.massKg * body.velocityMPerS.squaredNorm();
         momentum += body.massKg * body.velocityMPerS;
+        angMom   += body.massKg * body.positionM.cross(body.velocityMPerS);
     }
     for (std::size_t i = 0; i < bodies_.size(); ++i)
         for (std::size_t j = i + 1; j < bodies_.size(); ++j) {
@@ -316,8 +431,46 @@ Telemetry Simulation::telemetry() const {
                 value.potentialEnergyJ -= GravitationalConstant *
                     bodies_[i].massKg * bodies_[j].massKg / r;
         }
-    value.totalEnergyJ    = value.kineticEnergyJ + value.potentialEnergyJ;
-    value.momentumKgMPerS = momentum.norm();
+    value.totalEnergyJ               = value.kineticEnergyJ + value.potentialEnergyJ;
+    value.momentumKgMPerS            = momentum.norm();
+    value.angularMomentumKgM2PerS    = angMom;
+    value.angularMomentumMagKgM2PerS = angMom.norm();
+
+    // Energy drift tracking (set reference on first call after reset)
+    if (referenceEnergyJ_ == 0.0 && value.totalEnergyJ != 0.0)
+        referenceEnergyJ_ = value.totalEnergyJ;
+    if (referenceEnergyJ_ != 0.0)
+        value.energyDriftFraction = (value.totalEnergyJ - referenceEnergyJ_) /
+                                     std::abs(referenceEnergyJ_);
+
+    // PBH derived metrics
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (!bodies_[i].hypothetical) continue;
+        try {
+            const auto el = orbitalElements(i, 0);
+            if (std::isfinite(el.semiMajorAxisM) && el.semiMajorAxisM > 0.0) {
+                // Kepler's 3rd law: T^2 = 4pi^2 a^3 / (G*M_sun)
+                const double muSun = GravitationalConstant * bodies_[0].massKg;
+                const double T = 2.0 * std::numbers::pi *
+                    std::sqrt(std::pow(el.semiMajorAxisM, 3.0) / muSun);
+                value.pbhPeriodYr = T / YEAR_S;
+            }
+            value.pbhHillSphereAU = hillSphereRadiusM(i, 0) / AU;
+
+            // Tisserand parameter w.r.t. Neptune (index 7: Neptune is 8th body)
+            // T_N = a_N/a + 2*sqrt(a/a_N * (1 - e^2)) * cos(i)
+            if (bodies_.size() > 7) {
+                const auto elN = orbitalElements(7, 0); // Neptune
+                if (elN.semiMajorAxisM > 0.0 && el.semiMajorAxisM > 0.0) {
+                    const double ratio = el.semiMajorAxisM / elN.semiMajorAxisM;
+                    value.neptuneTisserandPbh = (elN.semiMajorAxisM / el.semiMajorAxisM) +
+                        2.0 * std::sqrt(ratio * (1.0 - el.eccentricity * el.eccentricity)) *
+                        std::cos(el.inclinationRad);
+                }
+            }
+        } catch (...) {}
+        break;
+    }
     return value;
 }
 
@@ -388,6 +541,39 @@ OrbitalElements Simulation::orbitalElements(std::size_t bodyIndex,
         std::sqrt(1.0 + e) * std::cos(trueAnom / 2.0));
     const double meanAnom = eccAnom - e * std::sin(eccAnom);
     return {semiMajor, e, inc, lan, arg, trueAnom, meanAnom};
+}
+
+// ─── Tisserand Parameter ──────────────────────────────────────────────────────
+// T_p = a_p/a + 2*sqrt(a/a_p * (1-e^2)) * cos(i)
+// A conserved quantity in the restricted three-body problem. T < 3 implies
+// Jupiter-family comet ancestry; T > 3 implies classical Kuiper Belt or scattered
+// disc origin. Used here to classify TNO-PBH resonance families.
+double Simulation::tisserandParameter(std::size_t bodyIdx, std::size_t perturberIdx) const {
+    if (bodyIdx >= bodies_.size() || perturberIdx >= bodies_.size() || bodyIdx == perturberIdx)
+        throw std::out_of_range("Invalid index for Tisserand parameter");
+    try {
+        const auto el  = orbitalElements(bodyIdx,     0);  // body relative to Sun
+        const auto elP = orbitalElements(perturberIdx, 0); // perturber relative to Sun
+        if (elP.semiMajorAxisM <= 0.0 || el.semiMajorAxisM <= 0.0) return 0.0;
+        const double ratio = el.semiMajorAxisM / elP.semiMajorAxisM;
+        return (elP.semiMajorAxisM / el.semiMajorAxisM) +
+               2.0 * std::sqrt(ratio * (1.0 - el.eccentricity * el.eccentricity)) *
+               std::cos(el.inclinationRad);
+    } catch (...) { return 0.0; }
+}
+
+// ─── Orbital Period ───────────────────────────────────────────────────────────
+double Simulation::orbitalPeriodS(std::size_t bodyIdx, std::size_t primaryIdx) const {
+    if (bodyIdx >= bodies_.size() || primaryIdx >= bodies_.size() || bodyIdx == primaryIdx)
+        throw std::out_of_range("Invalid index for orbital period");
+    try {
+        const auto el = orbitalElements(bodyIdx, primaryIdx);
+        if (!std::isfinite(el.semiMajorAxisM) || el.semiMajorAxisM <= 0.0 || el.eccentricity >= 1.0)
+            return 0.0;
+        const double mu = GravitationalConstant *
+            (bodies_[bodyIdx].massKg + bodies_[primaryIdx].massKg);
+        return 2.0 * std::numbers::pi * std::sqrt(std::pow(el.semiMajorAxisM, 3.0) / mu);
+    } catch (...) { return 0.0; }
 }
 
 } // namespace erebus::physics

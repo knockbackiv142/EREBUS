@@ -8,6 +8,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSlider>
 #include <QPushButton>
@@ -179,6 +180,59 @@ MainWindow::MainWindow() {
 
     controls->addWidget(recGroup);
 
+    // ── Integrator selector ───────────────────────────────────────────────────
+    auto* intGroup = new QGroupBox("Physics Engine", central);
+    auto* intForm  = new QFormLayout(intGroup);
+    intForm->setSpacing(4);
+
+    auto* intSelector = new QComboBox(intGroup);
+    intSelector->addItem("Leapfrog / Verlet (symplectic, fast)");
+    intSelector->addItem("Runge-Kutta 4 (4th-order, accurate)");
+    intSelector->setCurrentIndex(0);
+    intSelector->setToolTip(
+        "Leapfrog (Störmer-Verlet): 2nd-order symplectic integrator.\n"
+        "Exactly conserves a modified energy — good for long-term orbital stability.\n\n"
+        "Runge-Kutta 4: 4th-order method with global truncation error O(h^4).\n"
+        "Better short-term accuracy, especially for high-eccentricity orbits.\n"
+        "Uses ~4x more CPU per step — reduce timestep for best results.");
+    connect(intSelector, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this](int idx) {
+                simulation_.setIntegrator(idx == 1
+                    ? physics::Integrator::RungeKutta4
+                    : physics::Integrator::LeapfrogVerlet);
+                statusBar()->showMessage(idx == 1
+                    ? "Integrator: Runge-Kutta 4 (high accuracy)"
+                    : "Integrator: Leapfrog / Verlet (symplectic)", 4000);
+            });
+    intForm->addRow("Integrator", intSelector);
+
+    controls->addWidget(intGroup);
+
+    // ── Close-encounter log ───────────────────────────────────────────────────
+    auto* encGroup = new QGroupBox("PBH Close-Encounter Log", central);
+    auto* encLayout = new QVBoxLayout(encGroup);
+    encLayout->setSpacing(2);
+
+    encounterLog_ = new QPlainTextEdit(encGroup);
+    encounterLog_->setReadOnly(true);
+    encounterLog_->setMaximumBlockCount(60);
+    encounterLog_->setStyleSheet(
+        "QPlainTextEdit { background: #030810; color: #80d0c0; "
+        "font-family: Consolas, monospace; font-size: 8pt; border: none; }");
+    encounterLog_->setPlaceholderText("No close encounters recorded yet.\n"
+                                       "PBH approaching within 2× its Hill sphere\nof any body will be logged here.");
+    encounterLog_->setMaximumHeight(110);
+    encLayout->addWidget(encounterLog_);
+
+    auto* clearEncBtn = new QPushButton("Clear Log", encGroup);
+    connect(clearEncBtn, &QPushButton::clicked, this, [this] {
+        simulation_.clearEncounterLog();
+        encounterLog_->clear();
+    });
+    encLayout->addWidget(clearEncBtn);
+
+    controls->addWidget(encGroup);
+
     // ── Focus body panel ──────────────────────────────────────────────────────
     auto* bodyGroup = new QGroupBox("Focus / Select Body", central);
     auto* bodyLayout = new QVBoxLayout(bodyGroup);
@@ -272,23 +326,44 @@ void MainWindow::updateSelectedBody(int index) {
     }
     try {
         const auto el = simulation_.orbitalElements(static_cast<std::size_t>(index));
-        const double periAU  = el.semiMajorAxisM * (1.0 - el.eccentricity) / 1.495978707e11;
-        const double apoAU   = el.semiMajorAxisM * (1.0 + el.eccentricity) / 1.495978707e11;
-        const double periodYr = std::pow(el.semiMajorAxisM / 1.495978707e11, 1.5);
+        const double AU = 1.495978707e11;
+        const double periAU  = el.semiMajorAxisM * (1.0 - el.eccentricity) / AU;
+        const double apoAU   = el.semiMajorAxisM * (1.0 + el.eccentricity) / AU;
+        const double periodS = simulation_.orbitalPeriodS(static_cast<std::size_t>(index));
+        const double periodYr = periodS / (365.25 * 86400.0);
+
+        // Tisserand parameter w.r.t. Neptune (index 7)
+        double tisserandNep = 0.0;
+        try { tisserandNep = simulation_.tisserandParameter(
+                static_cast<std::size_t>(index), 7); } catch (...) {}
+
+        QString classLine;
+        if (tisserandNep > 0.0) {
+            const char* cls = tisserandNep < 2.0 ? "Hyperbolic/unbound" :
+                              tisserandNep < 3.0 ? "Comet-like (T<3)" :
+                              tisserandNep < 3.05 ? "Near-resonant" :
+                                                    "Classical KBO / SDO";
+            classLine = QString("<br>T<sub>Neptune</sub>: %1 → <i>%2</i>")
+                        .arg(tisserandNep, 0, 'f', 4).arg(cls);
+        }
+
         QString extra;
         if (body.hypothetical) {
             const double rs = physics::Simulation::schwarzschildRadiusM(body.massKg) * 1000.0;
-            extra = QString("<br><span style='color:#c864f0;'>Schwarzschild r<sub>s</sub>: %1 mm</span>")
-                    .arg(rs, 0, 'f', 2);
+            const double hillAU = simulation_.hillSphereRadiusM(
+                static_cast<std::size_t>(index), 0) / AU;
+            extra = QString("<br><span style='color:#c864f0;'>r<sub>s</sub>: %1 mm | "
+                            "r<sub>Hill</sub>: %2 AU</span>")
+                    .arg(rs, 0, 'f', 2).arg(hillAU, 0, 'f', 2);
         }
         selectionTelemetry_->setText(
             QString("<b>%1</b><br>"
                     "a: %2 AU&emsp;e: %3<br>"
                     "i: %4°&emsp;Ω: %5°&emsp;ω: %6°<br>"
                     "q: %7 AU&emsp;Q: %8 AU<br>"
-                    "Period: %9 yr%10")
+                    "Period: %9 yr%10%11")
             .arg(QString::fromStdString(body.name))
-            .arg(el.semiMajorAxisM / 1.495978707e11, 0, 'f', 3)
+            .arg(el.semiMajorAxisM / AU, 0, 'f', 3)
             .arg(el.eccentricity, 0, 'f', 5)
             .arg(el.inclinationRad * 180.0 / std::numbers::pi, 0, 'f', 3)
             .arg(el.longitudeOfAscendingNodeRad * 180.0 / std::numbers::pi, 0, 'f', 3)
@@ -296,6 +371,7 @@ void MainWindow::updateSelectedBody(int index) {
             .arg(periAU, 0, 'f', 3)
             .arg(apoAU, 0, 'f', 3)
             .arg(periodYr, 0, 'f', 1)
+            .arg(classLine)
             .arg(extra));
     } catch (const std::exception& e) {
         selectionTelemetry_->setText(QString("<b>%1</b><br><i>%2</i>")
@@ -317,28 +393,62 @@ void MainWindow::updateTelemetry() {
             .arg(count).arg(count * 0.25, 0, 'f', 1));
     }
 
-    // Top-level live label
+    // Top-level live label (now includes energy drift + PBH metrics)
     const auto t = simulation_.telemetry();
     try {
         const auto el = simulation_.orbitalElements(3);
+        const double driftPct = t.energyDriftFraction * 100.0;
+        const QString driftColor = std::abs(t.energyDriftFraction) < 1e-6 ? "#60e080" :
+                                   std::abs(t.energyDriftFraction) < 1e-4 ? "#e0c060" : "#e06060";
+        QString pbhLine;
+        if (t.pbhPeriodYr > 0.0) {
+            pbhLine = QString("<br><b>PBH</b> T=%1 yr | T<sub>N</sub>=%2 | r<sub>H</sub>=%3 AU")
+                      .arg(t.pbhPeriodYr, 0, 'f', 1)
+                      .arg(t.neptuneTisserandPbh, 0, 'f', 3)
+                      .arg(t.pbhHillSphereAU, 0, 'f', 2);
+        }
         telemetry_->setText(QString(
             "<b>Live Telemetry</b><br>"
             "Sim time: <b>%1</b> yr (%2 days)<br>"
             "Total E: %3 J<br>"
-            "Linear p: %4 kg·m/s<br><br>"
+            "ΔE/E<sub>0</sub>: <span style='color:%4'>%5%</span><br>"
+            "|L|: %6 kg·m²/s<br><br>"
             "<b>Earth orbit</b><br>"
-            "a = %5 AU, e = %6<br>"
-            "i = %7°")
+            "a = %7 AU, e = %8<br>"
+            "i = %9°%10")
             .arg(t.timeS / (365.25 * 86400.0), 0, 'f', 3)
             .arg(t.timeS / 86400.0, 0, 'f', 1)
             .arg(t.totalEnergyJ, 0, 'e', 5)
-            .arg(t.momentumKgMPerS, 0, 'e', 5)
+            .arg(driftColor)
+            .arg(driftPct, 0, 'e', 3)
+            .arg(t.angularMomentumMagKgM2PerS, 0, 'e', 4)
             .arg(el.semiMajorAxisM / 1.495978707e11, 0, 'f', 6)
             .arg(el.eccentricity, 0, 'f', 8)
-            .arg(el.inclinationRad * 180.0 / std::numbers::pi, 0, 'f', 4));
+            .arg(el.inclinationRad * 180.0 / std::numbers::pi, 0, 'f', 4)
+            .arg(pbhLine));
     } catch (...) {
         telemetry_->setText(QString("<b>Sim time:</b> %1 yr")
             .arg(t.timeS / (365.25 * 86400.0), 0, 'f', 3));
+    }
+
+    // Refresh encounter log
+    refreshEncounterLog();
+}
+
+void MainWindow::refreshEncounterLog() {
+    if (!encounterLog_) return;
+    const auto& log = simulation_.encounterLog();
+    if (log.empty()) return;
+
+    encounterLog_->clear();
+    constexpr double YEAR_S = 365.25 * 86400.0;
+    for (const auto& ev : log) {
+        encounterLog_->appendPlainText(
+            QString("t=%1 yr | %2 | sep=%3 AU | v=%4 km/s")
+            .arg(ev.timeS / YEAR_S, 0, 'f', 2)
+            .arg(QString::fromStdString(ev.bodyName))
+            .arg(ev.separationAU, 0, 'f', 3)
+            .arg(ev.relativeSpeedKmS, 0, 'f', 2));
     }
 }
 
